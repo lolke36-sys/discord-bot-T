@@ -18,9 +18,9 @@ let players = [];
 let signupMessage = null;
 let locked = false;
 
-client.once('clientReady', () => {
+client.once('clientReady', async () => {
   console.log(`Bot is online as ${client.user.tag}`);
-  startHourlySignup();
+  await createSignup(); // direct test
 });
 
 function startHourlySignup() {
