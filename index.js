@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require('discord.js');
 
 const client = new Client({
   intents: [
@@ -14,10 +14,14 @@ const client = new Client({
 const MAX_PLAYERS = 10;
 const CHANNEL_ID = "1471317580076814380";
 const ROLE_ID = "1471319309107331236";
+const GUILD_ID = "1398674713181687929";
+const VOICE_CHANNEL_ID = "1463250512601157777";
 
 let players = [];
 let signupMessage = null;
 let locked = false;
+let closeTimestamp = null;
+let refreshInterval = null;
 
 client.once('clientReady', () => {
   console.log(`Bot is online as ${client.user.tag}`);
@@ -29,15 +33,21 @@ function startScheduler() {
     const now = new Date();
     const minutes = now.getMinutes();
 
-    if (minutes === 25) {
-      createSignup();
-    }
-
-    if (minutes === 43) {
-      closeSignup();
-    }
+    if (minutes === 25) createSignup();
+    if (minutes === 33) sendReminder();
+    if (minutes === 43) closeSignup();
 
   }, 60000);
+}
+
+async function sendReminder() {
+  const channel = await client.channels.fetch(CHANNEL_ID);
+  if (!channel) return;
+
+  channel.send(
+    `⏰ <@&${ROLE_ID}> Reminder!\n\n` +
+    `Sign-ups close in **10 minutes**.\nReact with ⚔️ to join.`
+  );
 }
 
 async function createSignup() {
@@ -47,85 +57,123 @@ async function createSignup() {
   players = [];
   locked = false;
 
-  signupMessage = await channel.send(
-    `<@&${ROLE_ID}>\n\n🎮 **Informal Event Sign-Up**\n\n` +
-    `There are **${MAX_PLAYERS} spots available** for this informal session.\n` +
-    `React with ✅ to secure your place.\n\n` +
-    `Good luck and have fun!\n\n` +
-    `**Spots Filled (0/${MAX_PLAYERS})** - 🟢 OPEN\n\nNo players yet.`
-  );
+  const now = new Date();
+  closeTimestamp = new Date(now.setMinutes(43, 0, 0)).getTime();
 
-  await signupMessage.react("✅");
+  signupMessage = await channel.send({
+    content: `<@&${ROLE_ID}>`,
+    embeds: [buildEmbed(false)]
+  });
+
+  await signupMessage.react("⚔️");
+
+  startAnimatedRefresh();
+}
+
+function startAnimatedRefresh() {
+  if (refreshInterval) clearInterval(refreshInterval);
+
+  refreshInterval = setInterval(async () => {
+    if (!signupMessage || locked) return;
+    await signupMessage.edit({ embeds: [buildEmbed(false)] });
+  }, 5000); // refresh every 5 sec
 }
 
 async function closeSignup() {
   if (!signupMessage) return;
 
   locked = true;
+  clearInterval(refreshInterval);
 
   await signupMessage.reactions.removeAll();
-
-  let list = players
-    .map((id, index) => `${index + 1}. <@${id}>`)
-    .join("\n");
-
-  if (!list) list = "No participants.";
-
-  await signupMessage.edit(
-    `🎮 **Informal Event Sign-Up**\n\n` +
-    `Sign-ups are now closed.\n\n` +
-    `**Final Participants (${players.length}/${MAX_PLAYERS})** - 🔒 CLOSED\n\n` +
-    list
-  );
+  await signupMessage.edit({ embeds: [buildEmbed(true)] });
 }
 
 client.on('messageReactionAdd', async (reaction, user) => {
   if (user.bot) return;
   if (!signupMessage) return;
   if (reaction.message.id !== signupMessage.id) return;
-  if (reaction.emoji.name !== "✅") return;
-  if (locked) {
-    reaction.users.remove(user.id);
-    return;
-  }
+  if (reaction.emoji.name !== "⚔️") return;
+  if (locked) return reaction.users.remove(user.id);
 
-  if (players.includes(user.id)) return;
-  if (players.length >= MAX_PLAYERS) {
-    locked = true;
-    await signupMessage.reactions.removeAll();
-    return;
+  if (!players.includes(user.id)) {
+    players.push(user.id);
+    updateMessage();
   }
-
-  players.push(user.id);
-  updateMessage();
 });
 
 client.on('messageReactionRemove', async (reaction, user) => {
   if (!signupMessage) return;
   if (reaction.message.id !== signupMessage.id) return;
-  if (reaction.emoji.name !== "✅") return;
+  if (reaction.emoji.name !== "⚔️") return;
 
   players = players.filter(id => id !== user.id);
   updateMessage();
 });
 
 async function updateMessage() {
-  let list = players
-    .map((id, index) => `${index + 1}. <@${id}>`)
-    .join("\n");
+  if (!signupMessage) return;
+  await signupMessage.edit({ embeds: [buildEmbed(locked)] });
+}
 
-  if (!list) list = "No players yet.";
+function buildEmbed(closed = false) {
 
-  const status = locked ? "🔒 CLOSED" : "🟢 OPEN";
+  const main = players.slice(0, MAX_PLAYERS);
+  const reserve = players.slice(MAX_PLAYERS);
 
-  await signupMessage.edit(
-    `<@&${ROLE_ID}>\n\n🎮 **Informal Event Sign-Up**\n\n` +
-    `There are **${MAX_PLAYERS} spots available** for this informal session.\n` +
-    `React with ✅ to secure your place.\n\n` +
-    `Good luck and have fun!\n\n` +
-    `**Spots Filled (${players.length}/${MAX_PLAYERS})** - ${status}\n\n` +
-    list
-  );
+  const mainList = main.length
+    ? main.map(id => `⚔️ <@${id}>`).join("\n")
+    : "No warriors yet.";
+
+  const reserveList = reserve.length
+    ? reserve.map(id => `🛡️ <@${id}>`).join("\n")
+    : "No reserves.";
+
+  let color = 0xFFFFFF;
+  let title = "⚔️ Informal Event Sign-Up ⚔️";
+
+  if (!closed) {
+    const timeLeft = closeTimestamp - Date.now();
+
+    // Animated color + flashing title in final 2 minutes
+    if (timeLeft <= 120000) {
+      const flash = Math.floor(Date.now() / 1000) % 2 === 0;
+      color = flash ? 0xFF0000 : 0xFFFFFF;
+      title = flash
+        ? "🚨⚔️ FINAL 2 MINUTES ⚔️🚨"
+        : "⚔️🚨 FINAL 2 MINUTES 🚨⚔️";
+    }
+
+  } else {
+    color = 0xFF0000;
+    title = "🔒 Sign-Ups Closed";
+  }
+
+  const countdown = closed
+    ? "Sign-ups closed."
+    : `<t:${Math.floor(closeTimestamp / 1000)}:R>`;
+
+  const voiceLink = `https://discord.com/channels/${GUILD_ID}/${VOICE_CHANNEL_ID}`;
+
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(
+      `**Spots:** ${MAX_PLAYERS}\n` +
+      `**Status:** ${closed ? "🔒 CLOSED" : "🟢 OPEN"}\n` +
+      `**Closes:** ${countdown}\n\n` +
+
+      `━━━━━━━━━━━━━━━━━━\n\n` +
+
+      `🎙️ **Voice Channel:** [🔫︱𝐈𝐧𝐟𝐨𝐫𝐦𝐚𝐥 𝐕𝐂](${voiceLink})\n\n` +
+
+      `━━━━━━━━━━━━━━━━━━`
+    )
+    .addFields(
+      { name: `⚔️ Main Warriors (${main.length}/${MAX_PLAYERS})`, value: mainList, inline: false },
+      { name: `🛡️ Reserve Warriors (${reserve.length})`, value: reserveList, inline: false }
+    )
+    .setFooter({ text: "React with ⚔️ to join the battle." });
 }
 
 client.login(process.env.TOKEN);
