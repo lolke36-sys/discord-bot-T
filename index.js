@@ -177,3 +177,4 @@ function buildEmbed(closed = false) {
 }
 
 client.login(process.env.TOKEN);
+ 
